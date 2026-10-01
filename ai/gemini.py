@@ -15,9 +15,9 @@ T = TypeVar("T", bound=BaseModel)
 
 
 def is_transient_gemini_error(exception: BaseException) -> bool:
-    """Do not retry if quota is exhausted so router can instantly fallback to local LLM."""
+    """Do not retry if quota is exhausted or model not found so router can instantly fallback to local LLM."""
     err_msg = str(exception).lower()
-    if "quota" in err_msg or "resource_exhausted" in err_msg or "429" in err_msg:
+    if any(k in err_msg for k in ["quota", "resource_exhausted", "429", "404", "not_found", "unregistered", "invalid_argument"]):
         return False
     return True
 
@@ -28,7 +28,7 @@ class GeminiProvider:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-3.8-flash",
     ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.model_name = model_name

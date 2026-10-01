@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import List, Optional
+from typing import List, Optional, Any
 from playwright.async_api import Page, ElementHandle
 from assessments.models import AssessmentData, QuestionItem
 from ai.schemas import QuestionAnalysis
@@ -17,17 +17,31 @@ class AssessmentSolver:
     """Fills assessment questions based on AI candidate answers and submits them."""
 
     MODAL_CONTINUE_SELECTORS = [
+        'button:has-text("Resume assignment")',
+        'button:has-text("Start assignment")',
+        'button:has-text("Resume quiz")',
+        'button:has-text("Start quiz")',
+        'button:has-text("Take quiz")',
+        'button:has-text("Try again")',
         'button:has-text("Continue")',
         'button:has-text("I agree")',
         'button:has-text("Agree and continue")',
         'button[data-testid*="continue"]',
-        'button:has-text("Start")',
-        'button:has-text("Start quiz")',
-        'button:has-text("Start assignment")',
         'button:has-text("Resume")',
-        'button:has-text("Resume quiz")',
-        'button:has-text("Take quiz")',
-        'button:has-text("Try again")',
+        'button:has-text("Start")',
+    ]
+
+    QUESTION_CONTAINER_SELECTORS = [
+        'div[data-testid="question-item"]',
+        'div[data-testid*="part-item"]',
+        'div[class*="rc-FormPartsQuestion" i]',
+        'div[class*="QuestionCard" i]',
+        'div[class*="QuestionPrompt" i]',
+        'div[class*="quiz-question" i]',
+        'div[class*="c-quiz-question" i]',
+        'div[role="radiogroup"]',
+        'div.cds-RadioGroup-root',
+        'fieldset',
     ]
 
     SUBMIT_SELECTORS = [
@@ -48,12 +62,11 @@ class AssessmentSolver:
 
     async def prepare_quiz(self, page: Page) -> bool:
         """Dismiss Honor Code modals, agree to terms, and click Start/Resume buttons."""
-        logger.info("Preparing assessment page (checking for modals and Start buttons)...")
+        logger.info("Preparing assessment page (checking for modals and Start/Resume buttons)...")
         dismissed = False
 
-        for _ in range(4):
-            clicked_any = False
-            # Check for honor code checkboxes
+        for _ in range(5):
+            # Check for honor code checkboxes in modals
             try:
                 honor_checks = await page.query_selector_all(
                     'div[role="dialog"] input[type="checkbox"], label:has-text("Honor Code") input, input[name*="honor" i]'
@@ -62,11 +75,11 @@ class AssessmentSolver:
                     if await cb.is_visible() and not await cb.is_checked():
                         await cb.check()
                         logger.info("Checked Honor Code checkbox in modal.")
-                        clicked_any = True
             except Exception as e:
                 logger.debug(f"Honor check error: {e}")
 
             # Click Continue / Start / Resume buttons
+            clicked_any = False
             for selector in self.MODAL_CONTINUE_SELECTORS:
                 try:
                     btn = await page.query_selector(selector)
@@ -74,22 +87,24 @@ class AssessmentSolver:
                         btn_text = (await btn.inner_text()).strip()
                         logger.info(f"Clicking assessment modal button: '{btn_text}'")
                         await btn.click()
-                        await page.wait_for_timeout(2000)
+                        await page.wait_for_timeout(2500)
                         clicked_any = True
                         dismissed = True
                         break
                 except Exception as e:
                     logger.debug(f"Error clicking {selector}: {e}")
 
+            # Check if questions have appeared on the page
+            has_questions = await page.query_selector(
+                'input[type="radio"], div[role="radiogroup"], div.cds-RadioGroup-root, fieldset, div[class*="rc-FormPartsQuestion" i]'
+            )
+            if has_questions and await has_questions.is_visible():
+                logger.info("Assessment questions successfully loaded on page.")
+                return True
+
             if not clicked_any:
                 break
             await page.wait_for_timeout(1000)
-
-        # Wait for questions to be present
-        try:
-            await page.wait_for_selector('fieldset, div[data-testid*="part-item"], form', timeout=5000)
-        except Exception:
-            pass
 
         return dismissed
 
@@ -97,31 +112,38 @@ class AssessmentSolver:
         self,
         page: Page,
         assessment: AssessmentData,
-        analyses: List[QuestionAnalysis],
+        analyses: List[Any],
     ) -> bool:
         """Fill all question choices and submit the assessment."""
         logger.info(f"Automatically solving and submitting assessment: '{assessment.title}'")
 
-        # 1. Ensure modal is dismissed
+        # 1. Ensure questions are loaded
         await self.prepare_quiz(page)
 
         # 2. Locate all question blocks
-        question_containers = await page.query_selector_all(
-            'div[data-testid="question-item"], div[data-testid="part-item"], '
-            'div[class*="QuestionCard" i], div[class*="c-quiz-question" i], '
-            'fieldset, div.cds-Form-content'
-        )
+        question_containers: List[ElementHandle] = []
+        for selector in self.QUESTION_CONTAINER_SELECTORS:
+            elems = await page.query_selector_all(selector)
+            if elems and len(elems) >= 1:
+                question_containers = elems
+                break
 
         logger.info(f"Found {len(question_containers)} question containers on page.")
 
-        # Map analyses by question index (0-indexed or 1-indexed)
+        # Map analyses by question index
         for i, q in enumerate(assessment.questions):
-            analysis = analyses[i] if i < len(analyses) else None
-            if not analysis:
+            item = analyses[i] if i < len(analyses) else None
+            if not item:
                 logger.warning(f"No AI analysis found for question #{i+1}; skipping answer.")
                 continue
 
-            cand_answer = (analysis.candidate_answer or "").strip()
+            # Safely unpack Tuple[QuestionItem, QuestionAnalysis, ModelComparisonResult]
+            if isinstance(item, tuple):
+                analysis: QuestionAnalysis = item[1]
+            else:
+                analysis = item
+
+            cand_answer = (getattr(analysis, "candidate_answer", None) or "").strip()
             logger.info(f"Answering Question #{i+1}: AI candidate answer = '{cand_answer}'")
 
             # Try to get question container
@@ -143,7 +165,6 @@ class AssessmentSolver:
         await page.wait_for_timeout(1000)
 
         try:
-            # Check any honor code / agreement checkbox before submission
             bottom_checkboxes = await page.query_selector_all('input[type="checkbox"]:not(:checked)')
             for cb in bottom_checkboxes:
                 if await cb.is_visible():
@@ -199,43 +220,38 @@ class AssessmentSolver:
         """Find and click the appropriate option radio/checkbox/label."""
         scope = container or page
 
-        # Clean candidate answer
         cand_clean = candidate_answer.strip().upper()
         letter_match = re.search(r'\b([A-H])\b', cand_clean)
         target_letter = letter_match.group(1) if letter_match else None
 
-        # 1. Find all option elements in this question container
+        # 1. Collect option elements
         option_elements = await scope.query_selector_all(
-            'label[class*="option" i], label[class*="Radio" i], label[class*="Checkbox" i], '
+            'label[class*="Radio" i], label[class*="Checkbox" i], '
             'div[class*="cds-Radio" i], div[class*="cds-Checkbox" i], '
+            'label.cds-Radio-container, label.cds-Checkbox-container, '
             'input[type="radio"], input[type="checkbox"], label'
         )
 
-        # Strategy A: Match by option index or letter (A=0, B=1, C=2, D=3...)
+        # Strategy A: Match by option letter index (A=0, B=1, C=2, D=3...)
         if target_letter:
             letter_idx = ord(target_letter) - ord('A')
-            # Look at options list from question item
             if 0 <= letter_idx < len(q_item.options):
                 opt_info = q_item.options[letter_idx]
-                target_text = opt_info.text.lower()
-                # Find matching element containing this text
+                target_text = opt_info.text.strip().lower()
                 for el in option_elements:
                     text = (await el.inner_text()).strip().lower()
-                    if target_text in text or text in target_text:
-                        input_el = await el.query_selector('input')
-                        target_click = input_el or el
-                        await target_click.click()
+                    if target_text and (target_text in text or text in target_text):
+                        await el.click()
                         return True
 
-            # Fallback: click the N-th radio or checkbox input
+            # Fallback to index of inputs
             inputs = await scope.query_selector_all('input[type="radio"], input[type="checkbox"]')
             if 0 <= letter_idx < len(inputs):
                 inp = inputs[letter_idx]
-                if await inp.is_visible():
-                    await inp.click()
+                try:
+                    await inp.click(force=True)
                     return True
-                else:
-                    # Click parent label
+                except Exception:
                     parent = await inp.evaluate_handle("el => el.closest('label') || el")
                     await parent.as_element().click()
                     return True
@@ -245,11 +261,8 @@ class AssessmentSolver:
             text = (await el.inner_text()).strip()
             if not text:
                 continue
-            # If candidate answer text appears in option text
             if candidate_answer.lower() in text.lower() or text.lower() in candidate_answer.lower():
-                input_el = await el.query_selector('input')
-                target_click = input_el or el
-                await target_click.click()
+                await el.click()
                 return True
 
         # Strategy C: Text input / short answer

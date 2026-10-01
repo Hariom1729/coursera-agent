@@ -18,12 +18,14 @@ class AssessmentExtractor:
 
     QUESTION_CONTAINER_SELECTORS = [
         'div[data-testid="question-item"]',
-        'div[data-testid="part-item"]',
+        'div[data-testid*="part-item"]',
+        'div[class*="rc-FormPartsQuestion" i]',
         'div[class*="QuestionCard" i]',
         'div[class*="QuestionPrompt" i]',
         'div[class*="quiz-question" i]',
         'div[class*="c-quiz-question" i]',
-        'div.cds-Form-content',
+        'div[role="radiogroup"]',
+        'div.cds-RadioGroup-root',
         'fieldset',
     ]
 
@@ -33,6 +35,8 @@ class AssessmentExtractor:
         'label[class*="Radio" i]',
         'label[class*="Checkbox" i]',
         'div[class*="Choice" i]',
+        'label.cds-Radio-container',
+        'label.cds-Checkbox-container',
         'div.cds-Radio-container',
         'div.cds-Checkbox-container',
         'li[role="radio"]',
@@ -77,16 +81,28 @@ class AssessmentExtractor:
 
         for idx, container in enumerate(containers, start=1):
             try:
+                # If container is radiogroup, find parent container to get prompt
+                effective_container = container
+                try:
+                    is_rg = await container.evaluate("el => el.getAttribute('role') === 'radiogroup' || el.classList.contains('cds-RadioGroup-root')")
+                    if is_rg:
+                        parent_h = await container.evaluate_handle(
+                            "el => el.closest('[data-testid*=\"part-item\"], [class*=\"rc-FormPartsQuestion\"], [class*=\"QuestionCard\"], fieldset, form > div') || el.parentElement || el"
+                        )
+                        effective_container = parent_h.as_element() or container
+                except Exception:
+                    pass
+
                 # 1. Question Prompt
-                prompt_el = await container.query_selector(
-                    'legend, [class*="prompt" i], [class*="question-text" i], h3, h4, p'
+                prompt_el = await effective_container.query_selector(
+                    'legend, [class*="prompt" i], [class*="question-text" i], h2, h3, h4, [data-testid*="question"], p'
                 )
-                raw_prompt = await prompt_el.inner_text() if prompt_el else await container.inner_text()
+                raw_prompt = await prompt_el.inner_text() if prompt_el else await effective_container.inner_text()
                 question_text = self.parser.clean_question_text(raw_prompt)
 
                 # 2. Check for diagrams, canvas, or images
                 has_visuals = False
-                canvas_or_svg = await container.query_selector('canvas, svg, img[src*="diagram"], img[src*="asset"]')
+                canvas_or_svg = await effective_container.query_selector('canvas, svg, img[src*="diagram"], img[src*="asset"]')
                 if canvas_or_svg and await canvas_or_svg.is_visible():
                     has_visuals = True
 
@@ -95,7 +111,7 @@ class AssessmentExtractor:
                 if has_visuals:
                     screenshot_file = Path(screenshots_dir) / f"{assessment_id}_q{idx}.png"
                     try:
-                        await container.screenshot(path=str(screenshot_file))
+                        await effective_container.screenshot(path=str(screenshot_file))
                         screenshot_path = str(screenshot_file)
                         logger.info(f"Captured question diagram screenshot: {screenshot_path}")
                     except Exception as e:
@@ -105,7 +121,7 @@ class AssessmentExtractor:
                 options: List[OptionItem] = []
                 opt_elems = []
                 for opt_sel in self.OPTION_CONTAINER_SELECTORS:
-                    found = await container.query_selector_all(opt_sel)
+                    found = await effective_container.query_selector_all(opt_sel)
                     if found:
                         opt_elems = found
                         break

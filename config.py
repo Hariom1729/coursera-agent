@@ -40,7 +40,7 @@ class AutomationConfig(BaseModel):
 class GeminiConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable Google Gemini provider")
     api_key_env: str = Field(default="GEMINI_API_KEY", description="Environment variable holding Gemini API key")
-    model: str = Field(default="gemini-2.5-flash", description="Gemini model name")
+    model: str = Field(default="gemini-3.8-flash", description="Gemini model name")
 
     @property
     def api_key(self) -> Optional[str]:
