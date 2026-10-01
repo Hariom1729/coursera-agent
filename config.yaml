@@ -1,0 +1,49 @@
+course:
+  url: "https://www.coursera.org/learn/big-data-emerging-technologies/home/welcome"
+  name: "Big Data Emerging Technologies"
+
+browser:
+  profile_path: "./browser_profile"
+  headless: false
+  viewport_width: 1440
+  viewport_height: 900
+  slow_mo: 100
+
+automation:
+  auto_resume: true
+  retry_count: 5
+  retry_delay: 2
+  screenshots: true
+  auto_submit_assessments: true
+
+ai:
+  primary_provider: "gemini"
+
+  gemini:
+    enabled: true
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.5-flash"
+
+  local:
+    enabled: true
+    base_url: "http://127.0.0.1:1234/v1"
+    model: "qwen3.5-4b"
+
+  verification:
+    enabled: true
+    confidence_threshold: 0.80
+
+notifications:
+  enabled: true
+  on_start: true
+  on_assessment: true
+  on_error: true
+  on_completion: true
+  on_certificate: true
+
+database:
+  path: "./database/coursera.db"
+
+logging:
+  level: "INFO"
+  file: "./logs/agent.log"
